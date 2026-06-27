@@ -1,0 +1,15 @@
+node_modules/
+.next/
+.next
+python/ready_media/
+python/output/
+frames/
+temp/
+__pycache__/
+*.pyc
+.env
+.env.local
+.DS_Store
+Thumbs.db
+public/uploads/*
+!public/uploads/.gitkeep
