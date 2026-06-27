@@ -13,3 +13,5 @@ __pycache__/
 Thumbs.db
 public/uploads/*
 !public/uploads/.gitkeep
+*.mp4
+ocr_extracted.txt
