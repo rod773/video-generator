@@ -7,6 +7,8 @@ import json
 import asyncio
 import subprocess
 import time as time_module
+import cv2
+import numpy as np
 import edge_tts
 
 # ============================================================
@@ -282,6 +284,64 @@ def get_image_files():
     full_paths = [os.path.join(IMAGES_FOLDER, f) for f in image_files]
     full_paths.sort(key=lambda f: os.path.getmtime(f))
     return full_paths
+
+def create_3d_horizontal_flip(image_path, duration, output_path, direction=1):
+    w, h = TARGET_RESOLUTION
+    fps = TARGET_FPS
+    num_frames = max(int(duration * fps), 1)
+
+    img = cv2.imread(image_path)
+    if img is None:
+        raise RuntimeError(f"Could not load image: {image_path}")
+    img = cv2.resize(img, (w, h), interpolation=cv2.INTER_LANCZOS4)
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "rawvideo", "-vcodec", "rawvideo",
+        "-s", f"{w}x{h}", "-pix_fmt", "bgr24",
+        "-r", str(fps), "-i", "-",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-preset", "fast", "-crf", "23",
+        output_path
+    ]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    src = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+
+    for frame_idx in range(num_frames):
+        progress = frame_idx / num_frames
+        angle = direction * progress * math.pi
+        cos_a = math.cos(angle)
+
+        if abs(cos_a) < 0.01:
+            canvas = np.zeros((h, w, 3), dtype=np.uint8)
+        elif cos_a > 0:
+            dst = np.float32([
+                [w / 2 - w / 2 * cos_a, 0],
+                [w / 2 + w / 2 * cos_a, 0],
+                [w / 2 + w / 2 * cos_a, h],
+                [w / 2 - w / 2 * cos_a, h],
+            ])
+            M = cv2.getPerspectiveTransform(src, dst)
+            canvas = cv2.warpPerspective(img, M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+        else:
+            img_m = cv2.flip(img, 1)
+            dst = np.float32([
+                [w / 2 + w / 2 * cos_a, 0],
+                [w / 2 - w / 2 * cos_a, 0],
+                [w / 2 - w / 2 * cos_a, h],
+                [w / 2 + w / 2 * cos_a, h],
+            ])
+            M = cv2.getPerspectiveTransform(src, dst)
+            canvas = cv2.warpPerspective(img_m, M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+
+        proc.stdin.write(canvas.tobytes())
+
+    proc.stdin.close()
+    proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed during 3D horizontal rotation: {proc.stderr}")
+    return output_path
+
 
 def create_ken_burns_image_clip(image_path, duration, output_path, weights=None, color_filter=None, forced_effect=None):
     effects = [

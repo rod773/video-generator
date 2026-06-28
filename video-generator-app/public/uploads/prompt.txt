@@ -1,1 +1,1 @@
-sepia pan up
+make the image to rotate right horizontally 3d
