@@ -80,6 +80,19 @@ def parse_prompt(prompt_text):
         "horizontal flip left": "rotate_horizontal_left",
         "flip horizontally left": "rotate_horizontal_left",
         "3d rotate left": "rotate_horizontal_left",
+        "rotate 3d left": "rotate_horizontal_left",
+
+        # Object-level 3D rotation
+        "object rotate right": "object_flip_right",
+        "rotate object right": "object_flip_right",
+        "object flip right": "object_flip_right",
+        "object 3d right": "object_flip_right",
+        "object 3d rotate": "object_flip_right",
+        "rotate object 3d": "object_flip_right",
+        "object rotate left": "object_flip_left",
+        "rotate object left": "object_flip_left",
+        "object flip left": "object_flip_left",
+        "object 3d left": "object_flip_left",
         "turn left": "rotate_horizontal_left",
 
         # In-plane rotation
@@ -366,6 +379,109 @@ def create_3d_horizontal_flip(image_path, duration, output_path, direction=1):
     return output_path
 
 
+def create_object_3d_rotation(image_path, duration, output_path, direction=1):
+    w, h = TARGET_RESOLUTION
+    fps = TARGET_FPS
+    num_frames = max(int(duration * fps), 1)
+
+    img = cv2.imread(image_path)
+    if img is None:
+        raise RuntimeError(f"Could not load image: {image_path}")
+    img = cv2.resize(img, (w, h), interpolation=cv2.INTER_LANCZOS4)
+
+    from rembg import remove
+    result = remove(img)
+    mask_full = result[:, :, 3]
+
+    coords = cv2.findNonZero(mask_full)
+    if coords is None:
+        raise RuntimeError("No object detected in image")
+    x, y, ow, oh = cv2.boundingRect(coords)
+    x, y, ow, oh = max(0, x), max(0, y), min(ow, w - x), min(oh, h - y)
+
+    obj_img = img[y:y + oh, x:x + ow]
+    obj_mask = mask_full[y:y + oh, x:x + ow]
+
+    kernel = np.ones((3, 3), np.uint8)
+    obj_mask = cv2.morphologyEx(obj_mask, cv2.MORPH_CLOSE, kernel)
+    obj_mask = cv2.morphologyEx(obj_mask, cv2.MORPH_OPEN, kernel)
+
+    bg_mask = np.zeros((h, w), dtype=np.uint8)
+    bg_mask[y:y + oh, x:x + ow] = obj_mask
+    bg_mask = cv2.dilate(bg_mask, np.ones((5, 5), np.uint8), iterations=2)
+    inpainted = cv2.inpaint(img, bg_mask, 5, cv2.INPAINT_TELEA)
+
+    ocx, ocy = ow / 2.0, oh / 2.0
+    f_obj = max(ow, oh) * 0.35
+    d_obj = max(ow, oh) * 0.35
+
+    src_obj = np.float32([[0, 0], [ow, 0], [ow, oh], [0, oh]])
+    cx_rel = np.float32([-ow / 2, ow / 2, ow / 2, -ow / 2])
+    cy_rel = np.float32([-oh / 2, -oh / 2, oh / 2, oh / 2])
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "rawvideo", "-vcodec", "rawvideo",
+        "-s", f"{w}x{h}", "-pix_fmt", "bgr24",
+        "-r", str(fps), "-i", "-",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-preset", "fast", "-crf", "23",
+        output_path
+    ]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+
+    for frame_idx in range(num_frames):
+        progress = frame_idx / num_frames
+        angle = direction * math.pi * progress
+        cos_a = math.cos(angle)
+        sin_a = math.sin(angle)
+
+        if abs(cos_a) < 0.005:
+            canvas = inpainted.copy()
+        else:
+            x_rot = cx_rel * cos_a
+            z_rot = cx_rel * sin_a
+            denom = d_obj + z_rot
+            dst_x = f_obj * x_rot / denom + ocx
+            dst_y = f_obj * cy_rel / denom + ocy
+
+            zoom = 1 + 0.04 * math.sin(progress * math.pi)
+            dst_x = (dst_x - ocx) * zoom + ocx
+            dst_y = (dst_y - ocy) * zoom + ocy
+
+            dst = np.column_stack([dst_x, dst_y]).astype(np.float32)
+
+            if cos_a >= 0:
+                M = cv2.getPerspectiveTransform(src_obj, dst)
+                obj_warped = cv2.warpPerspective(
+                    obj_img, M, (ow, oh), borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+                msk = cv2.warpPerspective(
+                    obj_mask.astype(np.float32), M, (ow, oh), borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            else:
+                obj_m = cv2.flip(obj_img, 1)
+                msk_m = cv2.flip(obj_mask, 1)
+                M = cv2.getPerspectiveTransform(src_obj, dst)
+                obj_warped = cv2.warpPerspective(
+                    obj_m, M, (ow, oh), borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+                msk = cv2.warpPerspective(
+                    msk_m.astype(np.float32), M, (ow, oh), borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
+            msk = (msk > 127).astype(np.uint8) * 255
+            canvas = inpainted.copy()
+            roi = canvas[y:y + oh, x:x + ow]
+            msk_3ch = cv2.cvtColor(msk, cv2.COLOR_GRAY2BGR).astype(np.float32) / 255.0
+            blended = roi.astype(np.float32) * (1 - msk_3ch) + obj_warped.astype(np.float32) * msk_3ch
+            canvas[y:y + oh, x:x + ow] = blended.astype(np.uint8)
+
+        proc.stdin.write(canvas.tobytes())
+
+    proc.stdin.close()
+    proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError("ffmpeg failed during object 3D rotation")
+    return output_path
+
+
 def create_ken_burns_image_clip(image_path, duration, output_path, weights=None, color_filter=None, forced_effect=None):
     effects = [
         "zoom_in", "zoom_out", "dolly_in", "dolly_out",
@@ -376,6 +492,7 @@ def create_ken_burns_image_clip(image_path, duration, output_path, weights=None,
         "shake", "handheld", "pulse",
         "orbit_right", "orbit_left", "crane_up", "crane_down",
         "reveal",
+        "object_flip_right", "object_flip_left",
     ]
     if forced_effect:
         zoom_type = forced_effect
@@ -416,6 +533,20 @@ def create_ken_burns_image_clip(image_path, duration, output_path, weights=None,
     elif zoom_type in ("rotate_horizontal_right", "rotate_horizontal_left"):
         direction = 1 if zoom_type == "rotate_horizontal_right" else -1
         create_3d_horizontal_flip(image_path, duration, output_path, direction)
+        if color_filter:
+            temp = output_path + ".tmp.mp4"
+            os.replace(output_path, temp)
+            subprocess.run([
+                "ffmpeg", "-y", "-i", temp,
+                "-vf", color_filter,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                output_path
+            ], capture_output=True, text=True, check=True)
+            os.remove(temp)
+        return output_path
+    elif zoom_type in ("object_flip_right", "object_flip_left"):
+        direction = 1 if zoom_type == "object_flip_right" else -1
+        create_object_3d_rotation(image_path, duration, output_path, direction)
         if color_filter:
             temp = output_path + ".tmp.mp4"
             os.replace(output_path, temp)
