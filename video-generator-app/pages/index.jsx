@@ -12,6 +12,7 @@ export default function Home() {
   const [images, setImages] = useState([])
   const [scriptText, setScriptText] = useState('')
   const [voice, setVoice] = useState('en-US-AndrewNeural')
+  const [prompt, setPrompt] = useState('')
   const [logs, setLogs] = useState([])
   const [generating, setGenerating] = useState(false)
   const [videoSrc, setVideoSrc] = useState(null)
@@ -32,7 +33,11 @@ export default function Home() {
     const formData = new FormData()
     images.forEach(img => formData.append('images', img))
     const scriptBlob = new Blob([scriptText], { type: 'text/plain' })
-    formData.append('images', scriptBlob, 'script.txt')
+    formData.append('script', scriptBlob, 'script.txt')
+    if (prompt.trim()) {
+      const promptBlob = new Blob([prompt], { type: 'text/plain' })
+      formData.append('prompt', promptBlob, 'prompt.txt')
+    }
 
     try {
       const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData })
@@ -42,7 +47,8 @@ export default function Home() {
         setGenerating(false)
         return
       }
-      addLog('progress', `Uploaded ${uploadData.files.length} file(s)`)
+      const imageCount = uploadData.files.filter(f => f.type?.startsWith('image/')).length
+      addLog('progress', `Uploaded ${imageCount} image(s)`)
       addLog('progress', 'Starting video generation...')
 
       const res = await fetch('/api/generate', {
@@ -85,7 +91,7 @@ export default function Home() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-1 space-y-4">
           <UploadZone images={images} setImages={setImages} scriptText={scriptText} setScriptText={setScriptText} />
-          <ConfigPanel voice={voice} setVoice={setVoice} />
+          <ConfigPanel voice={voice} setVoice={setVoice} prompt={prompt} setPrompt={setPrompt} />
         </div>
 
         <div className="lg:col-span-2 space-y-4">

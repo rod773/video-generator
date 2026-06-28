@@ -1,4 +1,4 @@
-import { Settings, Monitor, Hash } from 'lucide-react'
+import { Settings, Monitor, Hash, Sparkles } from 'lucide-react'
 import {
   Select,
   SelectContent,
@@ -17,7 +17,7 @@ const voices = [
   { value: 'en-AU-WilliamNeural', label: 'William (AU)' },
 ]
 
-export default function ConfigPanel({ voice, setVoice }) {
+export default function ConfigPanel({ voice, setVoice, prompt, setPrompt }) {
   return (
     <div className="rounded-lg border border-border bg-card text-card-foreground p-4 space-y-3">
       <h3 className="text-sm font-medium flex items-center gap-2">
@@ -56,9 +56,20 @@ export default function ConfigPanel({ voice, setVoice }) {
             </div>
           </div>
         </div>
-        <div className="text-xs text-muted-foreground/70 space-y-1">
-          <p>Image duration: 3-5s per clip</p>
-          <p>Ken Burns: random zoom/pan on each image</p>
+        <Separator />
+        <div>
+          <label className="text-xs text-muted-foreground block mb-1.5 flex items-center gap-1">
+            <Sparkles className="w-3 h-3" /> Video Prompt
+          </label>
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="Describe the video style you want... e.g. cinematic, slow and dramatic, fast-paced montage, vintage film look"
+            className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 resize-none"
+          />
+          <p className="text-xs text-muted-foreground/60 mt-1">
+            Influences Ken Burns effects, pacing, and image transitions
+          </p>
         </div>
       </div>
     </div>

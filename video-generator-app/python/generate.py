@@ -43,6 +43,57 @@ def get_duration(file_path):
         return 0.0
 
 # ============================================================
+# PROMPT PARSING
+# ============================================================
+
+def parse_prompt(prompt_text):
+    prompt_text = (prompt_text or "").lower()
+    weights = {"zoom_in": 1, "zoom_out": 1, "pan_right": 1, "pan_left": 1, "static": 1}
+    duration_range = [MIN_IMAGE_DURATION, MAX_IMAGE_DURATION]
+    color_filter = None
+
+    keywords = {
+        "cinematic": {"static": 0.3, "zoom_in": 1.5, "zoom_out": 1.5},
+        "dramatic": {"static": 0.3, "zoom_in": 2, "zoom_out": 2},
+        "dynamic": {"static": 0.2, "pan_right": 1.5, "pan_left": 1.5},
+        "fast": {"static": 0.2},
+        "quick": {"static": 0.2},
+        "montage": {"static": 0.2, "pan_right": 1.5, "pan_left": 1.5},
+        "calm": {"static": 2, "zoom_in": 0.7, "zoom_out": 0.7},
+        "slow": {"static": 2, "zoom_in": 0.7, "zoom_out": 0.7},
+        "gentle": {"static": 2, "zoom_in": 0.7, "zoom_out": 0.7},
+        "relaxing": {"static": 2.5, "zoom_in": 0.5, "zoom_out": 0.5},
+        "slideshow": {"static": 4},
+        "static": {"static": 4},
+        "vintage": {"static": 1},
+        "retro": {"static": 1},
+    }
+
+    for word, adjustments in keywords.items():
+        if word in prompt_text:
+            for effect, mult in adjustments.items():
+                weights[effect] = weights.get(effect, 1) * mult
+
+    fast_words = ["fast", "quick", "montage", "dynamic", "energetic"]
+    slow_words = ["slow", "calm", "gentle", "relaxing", "peaceful", "meditative"]
+
+    has_fast = any(w in prompt_text for w in fast_words)
+    has_slow = any(w in prompt_text for w in slow_words)
+
+    if has_fast and not has_slow:
+        duration_range = [2.0, 3.5]
+    elif has_slow and not has_fast:
+        duration_range = [4.0, 7.0]
+
+    if "vintage" in prompt_text or "retro" in prompt_text:
+        color_filter = "colorchannelmixer=.33:.33:.33:.33:.33:.33:.33:.33"
+    elif "cinematic" in prompt_text:
+        color_filter = "curves=b='0/0 0.5/0.4 1/0.8':g='0/0 0.5/0.5 1/0.8':r='0/0 0.5/0.6 1/0.9'"
+
+    return weights, duration_range, color_filter
+
+
+# ============================================================
 # IMAGE PROCESSING
 # ============================================================
 
@@ -57,10 +108,16 @@ def get_image_files():
     full_paths.sort(key=lambda f: os.path.getmtime(f))
     return full_paths
 
-def create_ken_burns_image_clip(image_path, duration, output_path):
-    zoom_type = random.choice(["zoom_in", "zoom_out", "pan_right", "pan_left", "static"])
+def create_ken_burns_image_clip(image_path, duration, output_path, weights=None, color_filter=None):
+    effects = ["zoom_in", "zoom_out", "pan_right", "pan_left", "static"]
+    if weights:
+        total = sum(weights.get(e, 1) for e in effects)
+        probs = [weights.get(e, 1) / total for e in effects]
+        zoom_type = random.choices(effects, weights=probs, k=1)[0]
+    else:
+        zoom_type = random.choice(effects)
     w, h = TARGET_RESOLUTION
-    frames = int(duration * TARGET_FPS)
+    frames = max(int(duration * TARGET_FPS), 1)
     zoom_speed = 0.4 / frames
 
     if zoom_type == "zoom_in":
@@ -68,22 +125,28 @@ def create_ken_burns_image_clip(image_path, duration, output_path):
     elif zoom_type == "zoom_out":
         vf = f"zoompan=z='max(zoom-{zoom_speed},1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}"
     elif zoom_type == "pan_right":
-        pan_speed = f"on*{frames / (frames / 3)}"
-        vf = f"zoompan=z='min({pan_speed},iw/3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}"
+        pan_step = max(frames / 3, 1)
+        vf = f"zoompan=z='min(on*{pan_step},iw/3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}"
     elif zoom_type == "pan_left":
-        pan_speed = f"on*{frames / (frames / 3)}"
-        vf = f"zoompan=z='min({pan_speed},iw/3)':x='iw/3-min({pan_speed},iw/3)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}"
+        pan_step = max(frames / 3, 1)
+        vf = f"zoompan=z='min(on*{pan_step},iw/3)':x='iw/3-min(on*{pan_step},iw/3)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}"
     else:
         vf = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"
 
+    if color_filter:
+        vf = f"{vf},{color_filter}"
+
     cmd = [
-        "ffmpeg", "-y", "-i", image_path, "-vf", vf,
-        "-t", str(duration), "-c:v", "libx264",
-        "-preset", "fast", "-crf", "20",
-        "-r", str(TARGET_FPS), "-pix_fmt", "yuv420p",
+        "ffmpeg", "-y", "-loop", "1", "-i", image_path,
+        "-vf", vf,
+        "-t", str(duration),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-preset", "fast", "-crf", "23",
         output_path
     ]
-    subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {result.stderr.strip()}")
     return output_path
 
 # ============================================================
@@ -119,6 +182,16 @@ async def generate_video():
     image_files = get_image_files()
     log(f"Using {len(image_files)} images (sorted by date)")
 
+    prompt_weights = None
+    duration_range = [MIN_IMAGE_DURATION, MAX_IMAGE_DURATION]
+    color_filter = None
+    prompt_path = os.path.join(IMAGES_FOLDER, "prompt.txt")
+    if os.path.exists(prompt_path):
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            prompt_text = f.read()
+        prompt_weights, duration_range, color_filter = parse_prompt(prompt_text)
+        log(f"Prompt: {prompt_text[:60]}..." if len(prompt_text) > 60 else f"Prompt: {prompt_text}")
+
     generated_chunks = []
     image_index = 0
 
@@ -142,9 +215,9 @@ async def generate_video():
             img_path = image_files[image_index % len(image_files)]
             image_index += 1
             remaining = audio_duration - current_dur
-            target_dur = min(random.uniform(MIN_IMAGE_DURATION, MAX_IMAGE_DURATION), remaining)
+            target_dur = min(random.uniform(duration_range[0], duration_range[1]), remaining)
             clip_path = os.path.join(READY_FOLDER, f"clip_{idx}_{len(selected_clips)}.mp4")
-            create_ken_burns_image_clip(img_path, target_dur, clip_path)
+            create_ken_burns_image_clip(img_path, target_dur, clip_path, prompt_weights, color_filter)
             actual_dur = get_duration(clip_path)
             if actual_dur <= 0:
                 continue
