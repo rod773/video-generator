@@ -1,1 +1,1 @@
-make the image rotate 3d horizontally
+rotate right horizontally

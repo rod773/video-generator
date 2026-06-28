@@ -379,6 +379,64 @@ def create_3d_horizontal_flip(image_path, duration, output_path, direction=1):
     return output_path
 
 
+def _load_env():
+    """Load HUGGINGFACE_TOKEN from .env file if env var not set."""
+    if os.environ.get("HUGGINGFACE_TOKEN"):
+        return
+    env_paths = [
+        os.path.join(ROOT_DIR, "..", ".env"),
+        os.path.join(ROOT_DIR, "..", ".env.local"),
+        os.path.join(ROOT_DIR, ".env"),
+    ]
+    for p in env_paths:
+        p = os.path.normpath(p)
+        if os.path.exists(p):
+            for line in open(p, encoding="utf-8"):
+                line = line.strip()
+                if line.startswith("HUGGINGFACE_TOKEN="):
+                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if val:
+                        os.environ["HUGGINGFACE_TOKEN"] = val
+                    return
+
+def _generate_back_view_hf(obj_img):
+    _load_env()
+    token = os.environ.get("HUGGINGFACE_TOKEN")
+    if not token:
+        log("HUGGINGFACE_TOKEN not set — back will be mirrored")
+        return None
+
+    try:
+        from huggingface_hub import InferenceClient
+    except ImportError:
+        log("huggingface_hub not installed — back will be mirrored")
+        return None
+
+    client = InferenceClient(token=token)
+    prompt = (
+        "back view of the main subject, seen from behind, reverse angle, "
+        "unseen perspective, detailed texture, studio lighting, high quality, photorealistic"
+    )
+    try:
+        pil_img = client.text_to_image(
+            model="black-forest-labs/FLUX.1-dev",
+            prompt=prompt,
+        )
+        arr = np.array(pil_img)
+        if arr.shape[2] == 4:
+            arr = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+        else:
+            arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        oh, ow = obj_img.shape[:2]
+        result = cv2.resize(arr, (ow, oh), interpolation=cv2.INTER_LANCZOS4)
+        log(f"Back view generated via FLUX.1-dev ({ow}x{oh})")
+        return result
+    except Exception as e:
+        log(f"FLUX back view failed: {e}")
+
+    return None
+
+
 def create_object_3d_rotation(image_path, duration, output_path, direction=1):
     w, h = TARGET_RESOLUTION
     fps = TARGET_FPS
@@ -410,6 +468,40 @@ def create_object_3d_rotation(image_path, duration, output_path, direction=1):
     bg_mask[y:y + oh, x:x + ow] = obj_mask
     bg_mask = cv2.dilate(bg_mask, np.ones((5, 5), np.uint8), iterations=2)
     inpainted = cv2.inpaint(img, bg_mask, 5, cv2.INPAINT_TELEA)
+
+    # Generate AI back view once (blocks ~5s on first frame past 90°)
+    back_img = _generate_back_view_hf(obj_img)
+    if back_img is None or back_img.shape[:2] != (oh, ow):
+        log("Generating enhanced mirrored back view")
+        # Create a plausible back from mirror + enhancements
+        back_img = cv2.flip(obj_img, 1)
+
+        # 1. Edge-aware smoothing removes front-specific fine details (text, logos, facial features)
+        back_img = cv2.edgePreservingFilter(back_img, flags=1, sigma_s=40, sigma_r=0.35)
+
+        # 2. Non-uniform distortion breaks perfect mirror symmetry
+        xs, ys_ = np.meshgrid(np.arange(ow, dtype=np.float32), np.arange(oh, dtype=np.float32))
+        distort = 2.5 * np.sin(ys_ * 2 * np.pi / oh) * np.sin(xs * 2 * np.pi / ow)
+        bx = np.clip(xs + distort, 0, ow - 1).astype(np.float32)
+        by = ys_.astype(np.float32)
+        back_img = cv2.remap(back_img, bx, by, cv2.INTER_LINEAR)
+
+        # 3. Directional lighting from the opposite side
+        hsv = cv2.cvtColor(back_img, cv2.COLOR_BGR2HSV).astype(np.float32)
+        grad = np.linspace(0.82, 1.0, ow, dtype=np.float32)
+        grad = np.tile(grad[None, :], (oh, 1))
+        hsv[:, :, 2] = np.clip(hsv[:, :, 2] * grad, 0, 255)
+
+        # 4. Subtle hue shift + desaturation (different surface)
+        hsv[:, :, 0] = (hsv[:, :, 0] + 6.0) % 180
+        hsv[:, :, 1] *= 0.75
+        back_img = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+        # 5. Feather edges with background to blend seams
+        bg_patch = img[y:y + oh, x:x + ow]
+        msk_f = cv2.flip(obj_mask, 1).astype(np.float32) / 255.0
+        msk_f = cv2.erode(msk_f, np.ones((5, 5), np.uint8), iterations=2)[:, :, None]
+        back_img = (back_img * msk_f + bg_patch * (1 - msk_f)).astype(np.uint8)
 
     ocx, ocy = ow / 2.0, oh / 2.0
     f_obj = max(ow, oh) * 0.35
@@ -458,11 +550,11 @@ def create_object_3d_rotation(image_path, duration, output_path, direction=1):
                 msk = cv2.warpPerspective(
                     obj_mask.astype(np.float32), M, (ow, oh), borderMode=cv2.BORDER_CONSTANT, borderValue=0)
             else:
-                obj_m = cv2.flip(obj_img, 1)
+                # Back side: use AI-generated back view, warped through 3D perspective
                 msk_m = cv2.flip(obj_mask, 1)
                 M = cv2.getPerspectiveTransform(src_obj, dst)
                 obj_warped = cv2.warpPerspective(
-                    obj_m, M, (ow, oh), borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+                    back_img, M, (ow, oh), borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
                 msk = cv2.warpPerspective(
                     msk_m.astype(np.float32), M, (ow, oh), borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
