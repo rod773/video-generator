@@ -66,14 +66,19 @@ def parse_prompt(prompt_text):
         "horizontal flip right": "rotate_horizontal_right",
         "flip right": "rotate_horizontal_right",
         "flip horizontally": "rotate_horizontal_right",
+        "flip left": "rotate_horizontal_left",
         "3d rotate right": "rotate_horizontal_right",
+        "3d rotate": "rotate_horizontal_right",
+        "rotate 3d right": "rotate_horizontal_right",
+        "rotate 3d": "rotate_horizontal_right",
+        "3d horizontally": "rotate_horizontal_right",
         "turn right": "rotate_horizontal_right",
         "rotate left horizontally": "rotate_horizontal_left",
         "rotate horizontally left": "rotate_horizontal_left",
         "rotate left horizontal": "rotate_horizontal_left",
         "horizontal rotate left": "rotate_horizontal_left",
         "horizontal flip left": "rotate_horizontal_left",
-        "flip left": "rotate_horizontal_left",
+        "flip horizontally left": "rotate_horizontal_left",
         "3d rotate left": "rotate_horizontal_left",
         "turn left": "rotate_horizontal_left",
 
@@ -294,6 +299,7 @@ def create_3d_horizontal_flip(image_path, duration, output_path, direction=1):
     if img is None:
         raise RuntimeError(f"Could not load image: {image_path}")
     img = cv2.resize(img, (w, h), interpolation=cv2.INTER_LANCZOS4)
+    img_m = cv2.flip(img, 1)
 
     cmd = [
         "ffmpeg", "-y",
@@ -305,41 +311,58 @@ def create_3d_horizontal_flip(image_path, duration, output_path, direction=1):
         output_path
     ]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+
+    cx, cy = w / 2.0, h / 2.0
+    f = w * 0.35  # shorter focal length = stronger perspective
+    d = w * 0.35   # distance from camera to card center
+
+    # Corner positions relative to card center
     src = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+    # (x_rel, y_rel) for each corner: tl->(-w/2,-h/2), tr->(w/2,-h/2), br->(w/2,h/2), bl->(-w/2,h/2)
+    cx_rel = np.float32([-w / 2, w / 2, w / 2, -w / 2])
+    cy_rel = np.float32([-h / 2, -h / 2, h / 2, h / 2])
 
     for frame_idx in range(num_frames):
         progress = frame_idx / num_frames
-        angle = direction * progress * math.pi
+        angle = direction * math.pi * progress
         cos_a = math.cos(angle)
+        sin_a = math.sin(angle)
 
-        if abs(cos_a) < 0.01:
-            canvas = np.zeros((h, w, 3), dtype=np.uint8)
-        elif cos_a > 0:
-            dst = np.float32([
-                [w / 2 - w / 2 * cos_a, 0],
-                [w / 2 + w / 2 * cos_a, 0],
-                [w / 2 + w / 2 * cos_a, h],
-                [w / 2 - w / 2 * cos_a, h],
-            ])
+        if abs(cos_a) < 0.005:
+            proc.stdin.write(np.zeros((h, w, 3), dtype=np.uint8).tobytes())
+            continue
+
+        # 3D positions of corners after Y-axis rotation, projected to 2D
+        x_rot = cx_rel * cos_a          # X' = X * cos(θ)
+        z_rot = cx_rel * sin_a          # Z' = X * sin(θ)
+        denom = d + z_rot               # perspective division
+        dst_x = f * x_rot / denom + cx  # project X
+        dst_y = f * cy_rel / denom + cy  # project Y
+
+        # Subtle zoom-in that peaks mid-flip
+        zoom = 1 + 0.04 * math.sin(progress * math.pi)
+        dst_x = (dst_x - cx) * zoom + cx
+        dst_y = (dst_y - cy) * zoom + cy
+
+        dst = np.column_stack([dst_x, dst_y]).astype(np.float32)
+
+        if cos_a >= 0:
             M = cv2.getPerspectiveTransform(src, dst)
-            canvas = cv2.warpPerspective(img, M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+            canvas = cv2.warpPerspective(img, M, (w, h),
+                                         borderMode=cv2.BORDER_CONSTANT,
+                                         borderValue=(0, 0, 0))
         else:
-            img_m = cv2.flip(img, 1)
-            dst = np.float32([
-                [w / 2 + w / 2 * cos_a, 0],
-                [w / 2 - w / 2 * cos_a, 0],
-                [w / 2 - w / 2 * cos_a, h],
-                [w / 2 + w / 2 * cos_a, h],
-            ])
             M = cv2.getPerspectiveTransform(src, dst)
-            canvas = cv2.warpPerspective(img_m, M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+            canvas = cv2.warpPerspective(img_m, M, (w, h),
+                                         borderMode=cv2.BORDER_CONSTANT,
+                                         borderValue=(0, 0, 0))
 
         proc.stdin.write(canvas.tobytes())
 
     proc.stdin.close()
     proc.wait()
     if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed during 3D horizontal rotation: {proc.stderr}")
+        raise RuntimeError("ffmpeg failed during 3D horizontal rotation")
     return output_path
 
 
@@ -390,10 +413,20 @@ def create_ken_burns_image_clip(image_path, duration, output_path, weights=None,
         vf = f"zoompan=z='min(zoom+{zoom_speed * 0.5},1.2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h},pad=ceil(iw*1.5):ceil(ih*1.5):(ow-iw)/2:(oh-ih)/2:black,rotate=t*2*PI/{duration}:c=black,crop={w}:{h}:(ow-iw)/2:(oh-ih)/2"
     elif zoom_type == "rotate_left":
         vf = f"zoompan=z='min(zoom+{zoom_speed * 0.5},1.2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h},pad=ceil(iw*1.5):ceil(ih*1.5):(ow-iw)/2:(oh-ih)/2:black,rotate=-t*2*PI/{duration}:c=black,crop={w}:{h}:(ow-iw)/2:(oh-ih)/2"
-    elif zoom_type == "rotate_horizontal_right":
-        vf = f"zoompan=z='min(zoom+{zoom_speed * 0.3},1.1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h},pad=ceil(iw*1.2):ceil(ih*1.2):(ow-iw)/2:(oh-ih)/2:black,rotate=t*PI/{duration}:c=black,crop={w}:{h}:(ow-iw)/2:(oh-ih)/2"
-    elif zoom_type == "rotate_horizontal_left":
-        vf = f"zoompan=z='min(zoom+{zoom_speed * 0.3},1.1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h},pad=ceil(iw*1.2):ceil(ih*1.2):(ow-iw)/2:(oh-ih)/2:black,rotate=-t*PI/{duration}:c=black,crop={w}:{h}:(ow-iw)/2:(oh-ih)/2"
+    elif zoom_type in ("rotate_horizontal_right", "rotate_horizontal_left"):
+        direction = 1 if zoom_type == "rotate_horizontal_right" else -1
+        create_3d_horizontal_flip(image_path, duration, output_path, direction)
+        if color_filter:
+            temp = output_path + ".tmp.mp4"
+            os.replace(output_path, temp)
+            subprocess.run([
+                "ffmpeg", "-y", "-i", temp,
+                "-vf", color_filter,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                output_path
+            ], capture_output=True, text=True, check=True)
+            os.remove(temp)
+        return output_path
     elif zoom_type in ("orbit_right", "orbit_left"):
         direction = 1 if zoom_type == "orbit_right" else -1
         vf = f"zoompan=z='min(zoom+{zoom_speed*0.2},1.1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h},pad=ceil(iw*1.5):ceil(ih*1.5):(ow-iw)/2:(oh-ih)/2:black,rotate=t*{direction}*PI/{duration}:c=black,crop={w}:{h}:(ow-iw)/2:(oh-ih)/2"
