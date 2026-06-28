@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import sys
+import math
 import random
 import json
 import asyncio
@@ -55,32 +56,189 @@ def parse_prompt(prompt_text):
     forced_effect = None
 
     explicit_instructions = {
+        # Horizontal 3D rotation (card flip / sign turn)
+        "rotate right horizontally": "rotate_horizontal_right",
+        "rotate horizontally right": "rotate_horizontal_right",
+        "rotate right horizontal": "rotate_horizontal_right",
+        "horizontal rotate right": "rotate_horizontal_right",
+        "horizontal flip right": "rotate_horizontal_right",
+        "flip right": "rotate_horizontal_right",
+        "flip horizontally": "rotate_horizontal_right",
+        "3d rotate right": "rotate_horizontal_right",
+        "turn right": "rotate_horizontal_right",
+        "rotate left horizontally": "rotate_horizontal_left",
+        "rotate horizontally left": "rotate_horizontal_left",
+        "rotate left horizontal": "rotate_horizontal_left",
+        "horizontal rotate left": "rotate_horizontal_left",
+        "horizontal flip left": "rotate_horizontal_left",
+        "flip left": "rotate_horizontal_left",
+        "3d rotate left": "rotate_horizontal_left",
+        "turn left": "rotate_horizontal_left",
+
+        # In-plane rotation
         "rotate right": "rotate_right",
         "rotate clockwise": "rotate_right",
+        "spin right": "rotate_right",
+        "spin clockwise": "rotate_right",
         "rotate left": "rotate_left",
         "rotate counterclockwise": "rotate_left",
         "rotate counter-clockwise": "rotate_left",
+        "spin left": "rotate_left",
+        "spin counterclockwise": "rotate_left",
+
+        # Zoom
         "zoom in": "zoom_in",
         "zoom out": "zoom_out",
+        "dolly in": "dolly_in",
+        "dolly out": "dolly_out",
+        "push in": "dolly_in",
+        "pull out": "dolly_out",
+        "close up": "dolly_in",
+        "wide shot": "dolly_out",
+        "magnify": "zoom_in",
+        "shrink": "zoom_out",
+
+        # Pan / Truck / Tilt
         "pan right": "pan_right",
         "pan left": "pan_left",
+        "pan up": "pan_up",
+        "pan down": "pan_down",
+        "tilt up": "pan_up",
+        "tilt down": "pan_down",
+        "truck right": "pan_right",
+        "truck left": "pan_left",
         "slide right": "pan_right",
         "slide left": "pan_left",
+        "slide up": "pan_up",
+        "slide down": "pan_down",
+        "scroll right": "pan_right",
+        "scroll left": "pan_left",
+        "scroll up": "pan_up",
+        "scroll down": "pan_down",
+        "move right": "pan_right",
+        "move left": "pan_left",
+        "move up": "pan_up",
+        "move down": "pan_down",
+
+        # Static
         "still": "static",
         "static": "static",
         "no movement": "static",
+        "no motion": "static",
+        "freeze": "static",
+        "still image": "static",
+        "pause": "static",
+
+        # Shake
+        "shake": "shake",
+        "shaking": "shake",
+        "vibrate": "shake",
+        "vibration": "shake",
+        "tremble": "shake",
+        "trembling": "shake",
+        "earthquake": "shake",
+        "jitter": "shake",
+        "unstable": "shake",
+        "wobble": "shake",
+        "wobbling": "shake",
+        "handheld": "handheld",
+        "hand held": "handheld",
+        "hand-held": "handheld",
+        "documentary": "handheld",
+        "camcorder": "handheld",
+
+        # Pulse / Breathing
+        "pulse": "pulse",
+        "pulsing": "pulse",
+        "breathe": "pulse",
+        "breathing": "pulse",
+        "throb": "pulse",
+        "throbbing": "pulse",
+        "beat": "pulse",
+        "pulsate": "pulse",
+        "oscillate": "pulse",
+
+        # Color effects
+        "black and white": "grayscale",
+        "black & white": "grayscale",
+        "bw": "grayscale",
+        "b&w": "grayscale",
+        "grayscale": "grayscale",
+        "greyscale": "grayscale",
+        "monochrome": "grayscale",
+        "mono": "grayscale",
+        "noir": "grayscale",
+        "sepia": "sepia",
+        "vintage": "sepia",
+        "retro": "sepia",
+        "old film": "sepia",
+        "old photo": "sepia",
+        "cinematic": "cinematic",
+        "cinema": "cinematic",
+        "film look": "cinematic",
+        "movie": "cinematic",
+        "invert": "invert",
+        "inverted": "invert",
+        "negative": "invert",
+
+        # Orbit / spiral (combines zoom + rotation)
+        "orbit right": "orbit_right",
+        "orbit clockwise": "orbit_right",
+        "orbit left": "orbit_left",
+        "orbit counterclockwise": "orbit_left",
+        "orbiting right": "orbit_right",
+        "orbiting left": "orbit_left",
+        "spiral right": "orbit_right",
+        "spiral left": "orbit_left",
+
+        # Crane / pedestal
+        "crane up": "crane_up",
+        "crane down": "crane_down",
+        "pedestal up": "crane_up",
+        "pedestal down": "crane_down",
+        "rise": "crane_up",
+        "descend": "crane_down",
+        "ascend": "crane_up",
+        "lift": "crane_up",
+        "lower": "crane_down",
+
+        # Reveal / fade
+        "reveal": "reveal",
+        "fade in": "reveal",
+        "fade from black": "reveal",
+        "appear": "reveal",
+        "dissolve in": "reveal",
     }
-    for phrase, effect in explicit_instructions.items():
+
+    # Check explicit instructions first (sorted by length descending to match longer phrases first)
+    color_only_effects = {"grayscale", "sepia", "cinematic", "invert"}
+    for phrase in sorted(explicit_instructions.keys(), key=len, reverse=True):
         if phrase in prompt_text:
-            forced_effect = effect
+            effect = explicit_instructions[phrase]
+            if effect in color_only_effects:
+                # Apply as color filter, not movement
+                pass
+            else:
+                forced_effect = effect
             break
 
+    # Color filters still apply independently of forced effect
+    if any(w in prompt_text for w in ["sepia", "vintage", "retro", "old film", "old photo"]):
+        color_filter = "colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131:0"
+    elif any(w in prompt_text for w in ["cinematic", "cinema", "film look", "movie"]):
+        color_filter = "curves=b='0/0 0.5/0.4 1/0.8':g='0/0 0.5/0.5 1/0.8':r='0/0 0.5/0.6 1/0.9'"
+    elif any(w in prompt_text for w in ["black and white", "bw", "grayscale", "monochrome"]):
+        color_filter = "colorchannelmixer=.3:.4:.3:0:.3:.4:.3:0:.3:.4:.3:0,hue=s=0"
+    elif "invert" in prompt_text:
+        color_filter = "colorchannelmixer=-1:1:0:0:0:-1:1:0:0:0:-1:1"
+
+    # Style keywords (fallback when no explicit instruction)
     if not forced_effect:
         keywords = {
             "cinematic": {"static": 0.3, "zoom_in": 1.5, "zoom_out": 1.5},
             "dramatic": {"static": 0.3, "zoom_in": 2, "zoom_out": 2},
             "dynamic": {"static": 0.2, "pan_right": 1.5, "pan_left": 1.5},
-            "fast": {"static": 0.2},
+            "fast": {"static": 0.2, "shake": 2},
             "quick": {"static": 0.2},
             "montage": {"static": 0.2, "pan_right": 1.5, "pan_left": 1.5},
             "calm": {"static": 2, "zoom_in": 0.7, "zoom_out": 0.7},
@@ -89,8 +247,6 @@ def parse_prompt(prompt_text):
             "relaxing": {"static": 2.5, "zoom_in": 0.5, "zoom_out": 0.5},
             "slideshow": {"static": 4},
             "static": {"static": 4},
-            "vintage": {"static": 1},
-            "retro": {"static": 1},
         }
 
         for word, adjustments in keywords.items():
@@ -98,8 +254,8 @@ def parse_prompt(prompt_text):
                 for effect, mult in adjustments.items():
                     weights[effect] = weights.get(effect, 1) * mult
 
-        fast_words = ["fast", "quick", "montage", "dynamic", "energetic"]
-        slow_words = ["slow", "calm", "gentle", "relaxing", "peaceful", "meditative"]
+        fast_words = ["fast", "quick", "montage", "dynamic", "energetic", "time lapse", "timelapse", "speed up"]
+        slow_words = ["slow", "calm", "gentle", "relaxing", "peaceful", "meditative", "slow motion", "slowmo"]
 
         has_fast = any(w in prompt_text for w in fast_words)
         has_slow = any(w in prompt_text for w in slow_words)
@@ -108,11 +264,6 @@ def parse_prompt(prompt_text):
             duration_range = [2.0, 3.5]
         elif has_slow and not has_fast:
             duration_range = [4.0, 7.0]
-
-    if "vintage" in prompt_text or "retro" in prompt_text:
-        color_filter = "colorchannelmixer=.33:.33:.33:.33:.33:.33:.33:.33"
-    elif "cinematic" in prompt_text:
-        color_filter = "curves=b='0/0 0.5/0.4 1/0.8':g='0/0 0.5/0.5 1/0.8':r='0/0 0.5/0.6 1/0.9'"
 
     return weights, duration_range, color_filter, forced_effect
 
@@ -133,7 +284,16 @@ def get_image_files():
     return full_paths
 
 def create_ken_burns_image_clip(image_path, duration, output_path, weights=None, color_filter=None, forced_effect=None):
-    effects = ["zoom_in", "zoom_out", "pan_right", "pan_left", "static", "rotate_right", "rotate_left"]
+    effects = [
+        "zoom_in", "zoom_out", "dolly_in", "dolly_out",
+        "pan_right", "pan_left", "pan_up", "pan_down",
+        "static",
+        "rotate_right", "rotate_left",
+        "rotate_horizontal_right", "rotate_horizontal_left",
+        "shake", "handheld", "pulse",
+        "orbit_right", "orbit_left", "crane_up", "crane_down",
+        "reveal",
+    ]
     if forced_effect:
         zoom_type = forced_effect
     elif weights:
@@ -146,21 +306,45 @@ def create_ken_burns_image_clip(image_path, duration, output_path, weights=None,
     w, h = TARGET_RESOLUTION
     frames = max(int(duration * TARGET_FPS), 1)
     zoom_speed = 0.4 / frames
+    half = frames // 2
 
     if zoom_type == "zoom_in":
         vf = f"zoompan=z='min(zoom+{zoom_speed},1.4)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}"
     elif zoom_type == "zoom_out":
         vf = f"zoompan=z='max(zoom-{zoom_speed},1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}"
+    elif zoom_type in ("dolly_in",):
+        vf = f"zoompan=z='min(zoom+{zoom_speed * 0.3},1.2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}"
+    elif zoom_type in ("dolly_out",):
+        vf = f"zoompan=z='max(zoom-{zoom_speed * 0.3},1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}"
     elif zoom_type == "pan_right":
         pan_step = max(frames / 3, 1)
         vf = f"zoompan=z='min(on*{pan_step},iw/3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}"
     elif zoom_type == "pan_left":
         pan_step = max(frames / 3, 1)
         vf = f"zoompan=z='min(on*{pan_step},iw/3)':x='iw/3-min(on*{pan_step},iw/3)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}"
+    elif zoom_type in ("pan_up", "crane_up"):
+        vf = f"zoompan=z='min(zoom+{zoom_speed * 0.3},1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)-{h/4}*on/{frames}':d=1:s={w}x{h}"
+    elif zoom_type in ("pan_down", "crane_down"):
+        vf = f"zoompan=z='min(zoom+{zoom_speed * 0.3},1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)+{h/4}*on/{frames}':d=1:s={w}x{h}"
     elif zoom_type == "rotate_right":
         vf = f"zoompan=z='min(zoom+{zoom_speed * 0.5},1.2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h},pad=ceil(iw*1.5):ceil(ih*1.5):(ow-iw)/2:(oh-ih)/2:black,rotate=t*2*PI/{duration}:c=black,crop={w}:{h}:(ow-iw)/2:(oh-ih)/2"
     elif zoom_type == "rotate_left":
         vf = f"zoompan=z='min(zoom+{zoom_speed * 0.5},1.2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h},pad=ceil(iw*1.5):ceil(ih*1.5):(ow-iw)/2:(oh-ih)/2:black,rotate=-t*2*PI/{duration}:c=black,crop={w}:{h}:(ow-iw)/2:(oh-ih)/2"
+    elif zoom_type == "rotate_horizontal_right":
+        vf = f"zoompan=z='min(zoom+{zoom_speed * 0.3},1.1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h},pad=ceil(iw*1.2):ceil(ih*1.2):(ow-iw)/2:(oh-ih)/2:black,rotate=t*PI/{duration}:c=black,crop={w}:{h}:(ow-iw)/2:(oh-ih)/2"
+    elif zoom_type == "rotate_horizontal_left":
+        vf = f"zoompan=z='min(zoom+{zoom_speed * 0.3},1.1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h},pad=ceil(iw*1.2):ceil(ih*1.2):(ow-iw)/2:(oh-ih)/2:black,rotate=-t*PI/{duration}:c=black,crop={w}:{h}:(ow-iw)/2:(oh-ih)/2"
+    elif zoom_type in ("orbit_right", "orbit_left"):
+        direction = 1 if zoom_type == "orbit_right" else -1
+        vf = f"zoompan=z='min(zoom+{zoom_speed*0.2},1.1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h},pad=ceil(iw*1.5):ceil(ih*1.5):(ow-iw)/2:(oh-ih)/2:black,rotate=t*{direction}*PI/{duration}:c=black,crop={w}:{h}:(ow-iw)/2:(oh-ih)/2"
+    elif zoom_type == "shake":
+        vf = f"zoompan=z='1.02':x='iw/2-(iw/zoom/2)+{w/15}*sin(on*0.5)+{w/20}*sin(on*0.3)':y='ih/2-(ih/zoom/2)+{h/15}*sin(on*0.7)+{h/20}*sin(on*0.4)':d=1:s={w}x{h}"
+    elif zoom_type == "handheld":
+        vf = f"zoompan=z='1.01':x='iw/2-(iw/zoom/2)+{w/40}*sin(on*0.1)+{w/60}*sin(on*0.2)':y='ih/2-(ih/zoom/2)+{h/40}*sin(on*0.12)+{h/60}*sin(on*0.25)':d=1:s={w}x{h}"
+    elif zoom_type == "pulse":
+        vf = f"zoompan=z='1+0.12*abs(sin(on*{2*math.pi/frames}))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={w}x{h}"
+    elif zoom_type == "reveal":
+        vf = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fade=t=in:d={duration}:color=black"
     else:
         vf = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"
 
