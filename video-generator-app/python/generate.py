@@ -21,6 +21,7 @@ TARGET_RESOLUTION = (1280, 720)
 TARGET_FPS = 30
 MIN_IMAGE_DURATION = 3.0
 MAX_IMAGE_DURATION = 5.0
+DURATION_PER_IMAGE = 4.0
 
 # ============================================================
 # UTILITY FUNCTIONS
@@ -166,19 +167,6 @@ async def generate_video():
     os.makedirs(READY_FOLDER, exist_ok=True)
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-    script_path = os.path.join(IMAGES_FOLDER, "script.txt")
-    if not os.path.exists(script_path):
-        raise FileNotFoundError("script.txt not found in uploads folder")
-
-    with open(script_path, "r", encoding="utf-8") as f:
-        raw_text = f.read()
-
-    paragraphs = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
-    if not paragraphs:
-        raise ValueError("No paragraphs found in script.txt")
-
-    log(f"Found {len(paragraphs)} paragraphs to process.")
-
     image_files = get_image_files()
     log(f"Using {len(image_files)} images (sorted by date)")
 
@@ -191,6 +179,65 @@ async def generate_video():
             prompt_text = f.read()
         prompt_weights, duration_range, color_filter = parse_prompt(prompt_text)
         log(f"Prompt: {prompt_text[:60]}..." if len(prompt_text) > 60 else f"Prompt: {prompt_text}")
+
+    script_path = os.path.join(IMAGES_FOLDER, "script.txt")
+    script_exists = os.path.exists(script_path)
+
+    # ===== SLIDESHOW MODE (no script, no audio) =====
+    if not script_exists:
+        log("No script found — generating silent slideshow")
+        clip_paths = []
+
+        for i, img_path in enumerate(image_files):
+            clip_path = os.path.join(READY_FOLDER, f"clip_{i}.mp4")
+            jitter = random.uniform(0.8, 1.2)
+            create_ken_burns_image_clip(img_path, DURATION_PER_IMAGE * jitter, clip_path, prompt_weights, color_filter)
+            actual_dur = get_duration(clip_path)
+            if actual_dur <= 0:
+                continue
+            clip_paths.append(clip_path)
+            log(f"Image {i + 1}/{len(image_files)} — {actual_dur:.1f}s")
+
+        if not clip_paths:
+            raise RuntimeError("No clips were generated")
+
+        concat_path = os.path.join(READY_FOLDER, "slideshow_concat.txt")
+        with open(concat_path, "w", encoding="utf-8") as f:
+            for clip in clip_paths:
+                f.write(f"file '{clip.replace(chr(92), '/')}'\n")
+
+        final_output = os.path.join(OUTPUT_FOLDER, "final_video.mp4")
+        subprocess.run([
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", concat_path, "-c:v", "libx264", "-preset", "medium",
+            "-crf", "20", final_output
+        ], capture_output=True, text=True)
+
+        if os.path.exists(concat_path):
+            os.remove(concat_path)
+        for clip in clip_paths:
+            if os.path.exists(clip):
+                try:
+                    os.remove(clip)
+                except PermissionError:
+                    pass
+
+        if os.path.exists(final_output):
+            log(f"Done! Output: {final_output}")
+            print(json.dumps({"type": "done", "output": final_output}), flush=True)
+        else:
+            raise RuntimeError("Final video not created")
+        return
+
+    # ===== AUDIO MODE (with script) =====
+    with open(script_path, "r", encoding="utf-8") as f:
+        raw_text = f.read()
+
+    paragraphs = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
+    if not paragraphs:
+        raise ValueError("No paragraphs found in script.txt")
+
+    log(f"Found {len(paragraphs)} paragraphs to process.")
 
     generated_chunks = []
     image_index = 0
@@ -297,6 +344,8 @@ if __name__ == "__main__":
     try:
         if len(sys.argv) > 1:
             VOICE_NAME = sys.argv[1]
+        if len(sys.argv) > 2:
+            DURATION_PER_IMAGE = float(sys.argv[2])
         asyncio.run(generate_video())
     except Exception as e:
         print(json.dumps({"type": "error", "message": str(e)}), flush=True)

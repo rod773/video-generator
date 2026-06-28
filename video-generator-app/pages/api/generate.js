@@ -10,7 +10,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
-  const { voice } = req.body || {}
+  const { voice, duration } = req.body || {}
   const pythonScript = path.join(process.cwd(), 'python', 'generate.py')
 
   res.setHeader('Content-Type', 'text/event-stream')
@@ -20,6 +20,7 @@ export default async function handler(req, res) {
 
   const args = [pythonScript]
   if (voice) args.push(voice)
+  if (duration) args.push(String(duration))
 
   const proc = spawn('python', args, {
     cwd: path.join(process.cwd(), 'python'),

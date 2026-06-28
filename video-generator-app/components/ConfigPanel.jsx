@@ -17,7 +17,7 @@ const voices = [
   { value: 'en-AU-WilliamNeural', label: 'William (AU)' },
 ]
 
-export default function ConfigPanel({ voice, setVoice, prompt, setPrompt }) {
+export default function ConfigPanel({ voice, setVoice, prompt, setPrompt, duration, setDuration }) {
   return (
     <div className="rounded-lg border border-border bg-card text-card-foreground p-4 space-y-3">
       <h3 className="text-sm font-medium flex items-center gap-2">
@@ -55,6 +55,19 @@ export default function ConfigPanel({ voice, setVoice, prompt, setPrompt }) {
               30
             </div>
           </div>
+        </div>
+        <Separator />
+        <div>
+          <label className="text-xs text-muted-foreground block mb-1.5">Duration per image (seconds)</label>
+          <input
+            type="number"
+            min="1"
+            max="30"
+            value={duration}
+            onChange={(e) => setDuration(parseInt(e.target.value) || 4)}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          />
+          <p className="text-xs text-muted-foreground/60 mt-1">Used when no script is provided</p>
         </div>
         <Separator />
         <div>

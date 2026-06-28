@@ -13,6 +13,7 @@ export default function Home() {
   const [scriptText, setScriptText] = useState('')
   const [voice, setVoice] = useState('en-US-AndrewNeural')
   const [prompt, setPrompt] = useState('')
+  const [duration, setDuration] = useState(4)
   const [logs, setLogs] = useState([])
   const [generating, setGenerating] = useState(false)
   const [videoSrc, setVideoSrc] = useState(null)
@@ -23,7 +24,6 @@ export default function Home() {
 
   const handleGenerate = async () => {
     if (!images.length) { addLog('error', 'Please upload at least one image.'); return }
-    if (!scriptText.trim()) { addLog('error', 'Please enter a script.'); return }
 
     setGenerating(true)
     setVideoSrc(null)
@@ -32,8 +32,10 @@ export default function Home() {
 
     const formData = new FormData()
     images.forEach(img => formData.append('images', img))
-    const scriptBlob = new Blob([scriptText], { type: 'text/plain' })
-    formData.append('script', scriptBlob, 'script.txt')
+    if (scriptText.trim()) {
+      const scriptBlob = new Blob([scriptText], { type: 'text/plain' })
+      formData.append('script', scriptBlob, 'script.txt')
+    }
     if (prompt.trim()) {
       const promptBlob = new Blob([prompt], { type: 'text/plain' })
       formData.append('prompt', promptBlob, 'prompt.txt')
@@ -54,7 +56,7 @@ export default function Home() {
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voice }),
+        body: JSON.stringify({ voice, duration }),
       })
 
       const reader = res.body.getReader()
@@ -91,7 +93,7 @@ export default function Home() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-1 space-y-4">
           <UploadZone images={images} setImages={setImages} scriptText={scriptText} setScriptText={setScriptText} />
-          <ConfigPanel voice={voice} setVoice={setVoice} prompt={prompt} setPrompt={setPrompt} />
+          <ConfigPanel voice={voice} setVoice={setVoice} prompt={prompt} setPrompt={setPrompt} duration={duration} setDuration={setDuration} />
         </div>
 
         <div className="lg:col-span-2 space-y-4">
